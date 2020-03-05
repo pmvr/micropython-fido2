@@ -19,3 +19,6 @@ It uses the HID interface for communication.
 
 # Testing
 For testing clone [fido2-test](https://github.com/pmvr/fido2-tests) and execute
+```
+pytest tests/standard -s
+```
