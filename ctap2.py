@@ -390,7 +390,7 @@ def clientPIN(data):
            or (data[2] in (0x04, 0x05) and ks_pin.PIN == b''):
             # either setPIN command and PIN already set
             # or changePIN/getPINToken command and PIN not yet set
-            return CTAP2_ERR_PIN_AUTH_INVALID
+            return CTAP2_ERR_PIN_NOT_SET
         Q = point(int.from_bytes(data[3][-2], 'big', False),
                   int.from_bytes(data[3][-3], 'big', False))
         if secp256r1.verify_point(Q) is False:
