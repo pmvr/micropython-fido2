@@ -18,7 +18,7 @@ PRIVATE_EC_KEY = const(0x0cd6a26e9525d2c18d5d3e32f1d56eca1f30af687d185342f5ac4f3
 
 MODE_CBC = const(2)
 
-KEY_HANDLE_LENGTH = const(96)
+KEY_HANDLE_LENGTH = const(64)
 
 ks_u2f = KS_U2F()
 
@@ -86,7 +86,7 @@ def u2f_register(req):
     d, Q = secp256r1.keyGen()
     user_public_key = b'\x04' + Q.x.to_bytes(32, 'big') \
                               + Q.y.to_bytes(32, 'big')
-    key_handle = enc_key_handle(d.to_bytes(32, 'big') + req[32:])
+    key_handle = enc_key_handle(d.to_bytes(32, 'big'), req[32:])
 
     s = sha256(b'\x00' + req[32:] + req[:32] + key_handle + user_public_key)
     h = int.from_bytes(s.digest(), 'big', False)
@@ -129,21 +129,20 @@ def u2f_authenticate(control_byte, req):
     return user_presemce + cb + signature + SW_NO_ERROR
 
 
-def enc_key_handle(data):
+def enc_key_handle(data, application_parameter):
     global ks_u2f
     enc = aes(ks_u2f.AES_KEY, MODE_CBC, ks_u2f.AES_IV)
     cipher = enc.encrypt(data)
-    return cipher + hmac_sha256(ks_u2f.KEY_5C, ks_u2f.KEY_36, cipher)
+    return cipher + hmac_sha256(ks_u2f.KEY_5C, ks_u2f.KEY_36,
+                                cipher + application_parameter)
 
 
 def dec_key_handle(data, application_parameter):
     global ks_u2f
     if len(data) != KEY_HANDLE_LENGTH:
         return b''
-    if data[-32:] != hmac_sha256(ks_u2f.KEY_5C, ks_u2f.KEY_36, data[:-32]):
+    if data[-32:] != hmac_sha256(ks_u2f.KEY_5C, ks_u2f.KEY_36,
+                                 data[:-32] + application_parameter):
         return b''
     dec = aes(ks_u2f.AES_KEY, MODE_CBC, ks_u2f.AES_IV)
-    m = dec.decrypt(data[:-32])
-    if m[32:] != application_parameter:
-        return b''
-    return m[:32]  # dec.decrypt(data[:32])
+    return dec.decrypt(data[:32])
