@@ -34,6 +34,9 @@ REM_GETASSERTION_PARAMETERS_COMMON = []
 REM_LAST_CMD = None
 NEXT_CREDENTIAL_TIMER = ticks_ms()
 
+# PIN retry management
+PIN_CONSECUTIVE_RETRIES = 0
+
 # keystores
 ks_ctap2 = KS_CTAP2()
 ks_pin = KS_PIN()
@@ -336,9 +339,11 @@ def dec_key_handle(data):
 
 
 def reset():
+    global PIN_CONSECUTIVE_RETRIES
     # user presence required
     if (up_check() is False):
         return CTAP2_ERR_OPERATION_DENIED
+    PIN_CONSECUTIVE_RETRIES = 0
     dir = listdir()
     for fn in dir:
         if fn.endswith('.keystore'):
@@ -350,7 +355,7 @@ def reset():
 
 
 def clientPIN(data):
-    global ks_pin
+    global ks_pin, PIN_CONSECUTIVE_RETRIES
     # https://fidoalliance.org/specs/fido-v2.0-ps-20190130/fido-client-to-authenticator-protocol-v2.0-ps-20190130.html#authenticatorClientPIN
     try:
         data = decode(data)
@@ -359,12 +364,11 @@ def clientPIN(data):
     ret = ccp.authenticatorClientPIN.verify(data)
     if ret != CTAP2_OK:
         return ret
-    print('data', data)
     if data[2] == 0x01:  # getRetries
         return CTAP2_OK + encode({3: ks_pin.PIN_RETRIES})
     elif data[2] == 0x02:  # getKeyAgreement
         return CTAP2_OK + encode({1: {1: 2,   # kty: EC2 key type
-                                      3: -7,  # alg: ES256 signature algorithm
+                                      3: -25,  # alg: ECDH-ES+HKDF-256
                                       -1: 1,   # crv: P-256 curve
                                       # x-coordinate
                                       -2: ks_pin.DH_PK_x,
@@ -392,8 +396,9 @@ def clientPIN(data):
         if secp256r1.verify_point(Q) is False:
             return CTAP1_ERR_OTHER
         # compute shared secret as SHA-256(Q.x)
+        d = int.from_bytes(ks_pin.DH_SK, 'big', False)
         shared_secret = sha256(
-            secp256r1.kP(ks_pin.DH_SK, Q).x.to_bytes(32, 'big')).digest()
+            secp256r1.kP(d, Q).x.to_bytes(32, 'big')).digest()
         k5c = bytes((c ^ 0x5c for c in shared_secret)) + b'\x5c' * 32
         k36 = bytes((c ^ 0x36 for c in shared_secret)) + b'\x36' * 32
         if data[2] == 0x03:  # setPIN
@@ -410,7 +415,7 @@ def clientPIN(data):
             # If the retries counter is 0, return CTAP2_ERR_PIN_BLOCKED error.
             if ks_pin.PIN_RETRIES == 0:
                 return CTAP2_ERR_PIN_BLOCKED
-            if ks_pin.PIN_CONSECUTIVE_RETRIES == 3:
+            if PIN_CONSECUTIVE_RETRIES == 3:
                 return CTAP2_ERR_PIN_AUTH_BLOCKED
             # Authenticator verifies pinAuth by generating
             # LEFT(HMAC-SHA-256(sharedSecret, newPinEnc || pinHashEnc), 16)
@@ -419,7 +424,7 @@ def clientPIN(data):
                 return CTAP2_ERR_PIN_AUTH_INVALID
             # Authenticator decrements the retries counter by 1.
             ks_pin.PIN_RETRIES -= 1
-            ks_pin.PIN_CONSECUTIVE_RETRIES += 1
+            PIN_CONSECUTIVE_RETRIES += 1
             ks_pin.save_keystore()
             # Authenticator decrypts pinHashEnc and verifies against its
             # internal stored LEFT(SHA-256(curPin), 16).
@@ -429,14 +434,14 @@ def clientPIN(data):
             if dec.decrypt(data[6]) != ks_pin.PIN_DIGEST:
                 if ks_pin.PIN_RETRIES == 0:
                     return CTAP2_ERR_PIN_BLOCKED
-                elif ks_pin.PIN_CONSECUTIVE_RETRIES == 3:
+                elif PIN_CONSECUTIVE_RETRIES == 3:
                     return CTAP2_ERR_PIN_AUTH_BLOCKED
                 else:
                     return CTAP2_ERR_PIN_INVALID
             # Authenticator sets the retries counter to 8.
             ks_pin.PIN_RETRIES = ks_pin.PIN_MAX_RETRIES
-            ks_pin.PIN_CONSECUTIVE_RETRIES = 0
             ks_pin.save_keystore()
+            PIN_CONSECUTIVE_RETRIES = 0
             # Authenticator decrypts newPinEnc using above "sharedSecret"
             # producing newPin and checks newPin length against minimum
             # PIN length of 4 bytes.
@@ -445,12 +450,12 @@ def clientPIN(data):
             # If the retries counter is 0, return CTAP2_ERR_PIN_BLOCKED error.
             if ks_pin.PIN_RETRIES == 0:
                 return CTAP2_ERR_PIN_BLOCKED
-            if ks_pin.PIN_CONSECUTIVE_RETRIES == 3:
+            if PIN_CONSECUTIVE_RETRIES == 3:
                 return CTAP2_ERR_PIN_AUTH_BLOCKED
             # Authenticator decrements the retries counter by 1.
             ks_pin.PIN_RETRIES -= 1
-            ks_pin.PIN_CONSECUTIVE_RETRIES += 1
             ks_pin.save_keystore()
+            PIN_CONSECUTIVE_RETRIES += 1
             # Authenticator decrypts pinHashEnc and verifies against its
             # internal stored LEFT(SHA-256(curPin), 16).
             if len(data[6]) != 16:
@@ -459,13 +464,14 @@ def clientPIN(data):
             if dec.decrypt(data[6]) != ks_pin.PIN_DIGEST:
                 if ks_pin.PIN_RETRIES == 0:
                     return CTAP2_ERR_PIN_BLOCKED
-                elif ks_pin.PIN_CONSECUTIVE_RETRIES == 3:
+                elif PIN_CONSECUTIVE_RETRIES == 3:
                     return CTAP2_ERR_PIN_AUTH_BLOCKED
                 else:
                     return CTAP2_ERR_PIN_INVALID
             # Authenticator sets the retries counter to 8.
             ks_pin.PIN_RETRIES = ks_pin.PIN_MAX_RETRIES
-            ks_pin.PIN_CONSECUTIVE_RETRIES = 0
+            ks_pin.save_keystore()
+            PIN_CONSECUTIVE_RETRIES = 0
             # Authenticator returns encrypted pinToken using
             # "sharedSecret": AES256-CBC(sharedSecret, IV=0, pinToken).
             ks_pin.PIN_TOKEN = urandom(16)
@@ -475,7 +481,7 @@ def clientPIN(data):
 
 
 def set_new_pin(shared_secret, newPinEnc):
-    global ks_pin
+    global ks_pin, PIN_CONSECUTIVE_RETRIES
     # Authenticator decrypts newPinEnc using above "sharedSecret"
     if len(newPinEnc) < 64 or len(newPinEnc) % 16 > 0:
         return CTAP1_ERR_OTHER
@@ -493,6 +499,7 @@ def set_new_pin(shared_secret, newPinEnc):
     ks_pin.PIN = pin
     ks_pin.PIN_RETRIES = ks_pin.PIN_MAX_RETRIES
     ks_pin.save_keystore()
+    PIN_CONSECUTIVE_RETRIES = 0
     return CTAP2_OK
 
 

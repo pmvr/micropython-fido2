@@ -114,8 +114,8 @@ class KS_PIN(KS):
         self.PIN_TOKEN = b''
         self.PIN_MAX_RETRIES = 8
         self.PIN_RETRIES = self.PIN_MAX_RETRIES
-        self.PIN_CONSECUTIVE_RETRIES = 0
-        self.DH_SK, Q = secp256r1.keyGen()
+        d, Q = secp256r1.keyGen()
+        self.DH_SK = d.to_bytes(32, 'big')
         self.DH_PK_x = Q.x.to_bytes(32, 'big')
         self.DH_PK_y = Q.y.to_bytes(32, 'big')
 
